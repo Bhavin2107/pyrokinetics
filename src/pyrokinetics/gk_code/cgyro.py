@@ -14,9 +14,6 @@ from ..local_geometry import (
     LocalGeometryFourierCGYRO,
     LocalGeometryMiller,
     LocalGeometryMXH,
-    default_fourier_cgyro_inputs,
-    default_miller_inputs,
-    default_mxh_inputs,
 )
 from ..local_species import LocalSpecies
 from ..normalisation import SimulationNormalisation as Normalisation
@@ -266,15 +263,13 @@ class GKInputCGYRO(GKInput, FileReader, file_type="CGYRO", reads=GKInput):
                 f"LocalGeometry type {eq_type} not implemented for CGYRO"
             )
 
-        local_geometry.normalise(norms=convention)
-
-        return local_geometry
+        return local_geometry.normalise(convention)
 
     def get_local_geometry_miller(self) -> LocalGeometryMiller:
         """
         Load Miller object from CGYRO file
         """
-        miller_data = default_miller_inputs()
+        miller_data = LocalGeometryMiller.DEFAULT_INPUTS.copy()
 
         for (key, val), val_default in zip(
             self.pyro_cgyro_miller.items(),
@@ -305,7 +300,7 @@ class GKInputCGYRO(GKInput, FileReader, file_type="CGYRO", reads=GKInput):
         else:
             miller_data["beta_prime"] = 0.0
 
-        miller = LocalGeometryMiller.from_gk_data(miller_data)
+        miller = LocalGeometryMiller(**miller_data)
 
         return miller
 
@@ -313,7 +308,9 @@ class GKInputCGYRO(GKInput, FileReader, file_type="CGYRO", reads=GKInput):
         """
         Load MXH object from CGYRO file
         """
-        mxh_data = default_mxh_inputs()
+        mxh_data = LocalGeometryMXH.DEFAULT_INPUTS.copy()
+        mxh_data["dcndr"] = np.zeros_like(mxh_data["cn"])
+        mxh_data["dsndr"] = np.zeros_like(mxh_data["sn"])
 
         for (key, val), default in zip(
             self.pyro_cgyro_mxh.items(), self.pyro_cgyro_mxh_defaults.values()
@@ -332,8 +329,6 @@ class GKInputCGYRO(GKInput, FileReader, file_type="CGYRO", reads=GKInput):
 
         # Force dsndr[0] = 0 as is definition
         mxh_data["dsndr"][0] = 0.0
-
-        mxh_data["n_moments"] = len(mxh_data["cn"])
 
         # Assume pref*8pi*1e-7 = 1.0
         beta = self.data.get("BETAE_UNIT", 0.0)
@@ -356,9 +351,7 @@ class GKInputCGYRO(GKInput, FileReader, file_type="CGYRO", reads=GKInput):
         else:
             mxh_data["beta_prime"] = 0.0
 
-        mxh = LocalGeometryMXH.from_gk_data(mxh_data)
-
-        mxh.dthetaR_dr = mxh.get_dthetaR_dr(mxh.theta, mxh.dcndr, mxh.dsndr)
+        mxh = LocalGeometryMXH(**mxh_data)
 
         return mxh
 
@@ -366,7 +359,7 @@ class GKInputCGYRO(GKInput, FileReader, file_type="CGYRO", reads=GKInput):
         """
         Load Fourier object from CGYRO file
         """
-        fourier_data = default_fourier_cgyro_inputs()
+        fourier_data = LocalGeometryFourierCGYRO.DEFAULT_INPUTS.copy()
 
         for (key, val), val_default in zip(
             self.pyro_cgyro_fourier.items(), self.pyro_cgyro_fourier_defaults.values()
@@ -394,7 +387,7 @@ class GKInputCGYRO(GKInput, FileReader, file_type="CGYRO", reads=GKInput):
         else:
             fourier_data["beta_prime"] = 0.0
 
-        fourier = LocalGeometryFourierCGYRO.from_gk_data(fourier_data)
+        fourier = LocalGeometryFourierCGYRO(**fourier_data)
 
         return fourier
 

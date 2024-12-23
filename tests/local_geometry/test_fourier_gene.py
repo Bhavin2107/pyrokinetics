@@ -1,3 +1,5 @@
+from .utils import get_miller_theta
+
 from pyrokinetics import template_dir
 from pyrokinetics.local_geometry import LocalGeometryFourierGENE
 from pyrokinetics.normalisation import SimulationNormalisation
@@ -21,17 +23,16 @@ def test_flux_surface_circle():
 
     sN = np.array([*[0.0] * n_moments])
 
-    lg = LocalGeometryFourierGENE(
-        {
-            "cN": cN,
-            "sN": sN,
-            "a_minor": 1.0,
-            "Rmaj": 0.0,
-            "Z0": 0.0,
-        }
-    )
+    inputs = LocalGeometryFourierGENE.DEFAULT_INPUTS.copy()
+    inputs["cN"] = cN
+    inputs["sN"] = sN
+    inputs["Rmaj"] = 0.0
+    inputs["Z0"] = 0.0
+    inputs["theta"] = theta
 
-    R, Z = lg.get_flux_surface(theta)
+    lg = LocalGeometryFourierGENE(**inputs)
+
+    R, Z = lg.R, lg.Z
 
     np.testing.assert_allclose(R**2 + Z**2, np.ones(length))
 
@@ -39,17 +40,14 @@ def test_flux_surface_circle():
 def test_flux_surface_elongation(generate_miller):
     length = 129
     theta = np.linspace(0.0, 2 * np.pi, length)
-
     Rmaj = 3.0
     elongation = 5.0
     miller = generate_miller(
         theta=theta, kappa=elongation, delta=0.0, Rmaj=Rmaj, rho=1.0, Z0=0.0
     )
+    fourier = LocalGeometryFourierGENE.from_local_geometry(miller)
 
-    fourier = LocalGeometryFourierGENE()
-    fourier.from_local_geometry(miller)
-
-    R, Z = fourier.get_flux_surface(theta)
+    R, Z = fourier.R, fourier.Z
     lref = fourier.Rmaj.units
 
     assert np.isclose(np.min(R), 2.0 * lref, atol=atol)
@@ -61,16 +59,13 @@ def test_flux_surface_elongation(generate_miller):
 def test_flux_surface_triangularity(generate_miller):
     length = 257
     theta = np.linspace(0, 2 * np.pi, length)
-
     miller = generate_miller(
         theta=theta, kappa=1.0, delta=0.5, Rmaj=3.0, rho=1.0, Z0=0.0
     )
-
-    fourier = LocalGeometryFourierGENE()
-    fourier.from_local_geometry(miller)
+    fourier = LocalGeometryFourierGENE.from_local_geometry(miller)
     lref = fourier.Rmaj.units
 
-    R, Z = fourier.get_flux_surface(fourier.theta_eq)
+    R, Z = fourier.R, fourier.Z
 
     assert np.isclose(np.min(R), 2.0 * lref, atol=atol)
     assert np.isclose(np.max(R), 4.0 * lref, atol=atol)
@@ -88,13 +83,10 @@ def test_flux_surface_triangularity(generate_miller):
 def test_flux_surface_long_triangularity(generate_miller):
     length = 257
     theta = np.linspace(0, 2 * np.pi, length)
-
     miller = generate_miller(
         theta=theta, kappa=2.0, delta=0.5, Rmaj=1.0, rho=2.0, Z0=0.0
     )
-
-    fourier = LocalGeometryFourierGENE()
-    fourier.from_local_geometry(miller)
+    fourier = LocalGeometryFourierGENE.from_local_geometry(miller)
     lref = fourier.Rmaj.units
 
     high_res_theta = np.linspace(-np.pi, np.pi, length)
@@ -116,26 +108,30 @@ def test_default_bunit_over_b0(generate_miller):
     length = 257
     theta = np.linspace(0, 2 * np.pi, length)
     miller = generate_miller(theta)
+    fourier = LocalGeometryFourierGENE.from_local_geometry(miller)
 
-    fourier = LocalGeometryFourierGENE()
-    fourier.from_local_geometry(miller)
-
-    assert np.isclose(fourier.get_bunit_over_b0(), 1.0141851056742153)
+    assert np.isclose(fourier.bunit_over_b0, 1.0141851056742153)
 
 
 @pytest.mark.parametrize(
-    ["parameters", "expected"],
+    ["parameters", "expected_R", "expected_Z", "expected_grad_r"],
     [
         (
             {"kappa": 1.0, "delta": 0.0, "s_kappa": 0.0, "s_delta": 0.0, "shift": 0.0},
+            lambda theta: 0.5 * np.cos(theta) + 3.0,
+            lambda theta: 0.5 * np.sin(theta),
             lambda theta: np.ones(theta.shape),
         ),
         (
             {"kappa": 1.0, "delta": 0.0, "s_kappa": 1.0, "s_delta": 0.0, "shift": 0.0},
+            lambda theta: 0.5 * np.cos(theta) + 3.0,
+            lambda theta: 0.5 * np.sin(theta),
             lambda theta: 1.0 / (np.sin(theta) ** 2 + 1),
         ),
         (
             {"kappa": 2.0, "delta": 0.5, "s_kappa": 0.5, "s_delta": 0.2, "shift": 0.1},
+            lambda theta: 0.5 * np.cos(theta + 0.523598775598299 * np.sin(theta)) + 3.0,
+            lambda theta: 1.0 * np.sin(theta),
             lambda theta: 2.0
             * np.sqrt(
                 0.25
@@ -154,19 +150,50 @@ def test_default_bunit_over_b0(generate_miller):
         ),
     ],
 )
-def test_grad_r(generate_miller, parameters, expected):
-    """Analytic answers for this test generated using sympy"""
+def test_grad_r(generate_miller, parameters, expected_R, expected_Z, expected_grad_r):
+    """Analytic answers for this test generated using sympy.
+
+    See the function ``print_grad_r_params`` below."""
     length = 129
     theta = np.linspace(0, 2 * np.pi, length)
-
     miller = generate_miller(theta, dict=parameters)
+    fourier = LocalGeometryFourierGENE.from_local_geometry(miller)
 
-    fourier = LocalGeometryFourierGENE()
-    fourier.from_local_geometry(miller)
+    miller_theta = get_miller_theta(
+        fourier.R.m,
+        fourier.Z.m,
+        theta,
+        fourier.Rmaj.m,
+        fourier.Z0.m,
+        fourier.rho.m,
+        miller.kappa.m,
+        miller.delta.m,
+    )
+
+    def plot():
+        import matplotlib.pyplot as plt
+
+        plt.scatter(fourier.R.m, fourier.Z.m)
+        plt.scatter(expected_R(miller_theta), expected_Z(miller_theta))
+        plt.show()
+        plt.plot(np.arange(len(miller_theta)), miller_theta)
+        plt.show()
 
     np.testing.assert_allclose(
-        ureg.Quantity(fourier.get_grad_r(theta=fourier.theta_eq)).magnitude,
-        expected(theta),
+        ureg.Quantity(fourier.R).magnitude,
+        expected_R(miller_theta),
+        atol=atol,
+    )
+
+    np.testing.assert_allclose(
+        ureg.Quantity(fourier.Z).magnitude,
+        expected_Z(miller_theta),
+        atol=atol,
+    )
+
+    np.testing.assert_allclose(
+        ureg.Quantity(fourier.get_grad_r()).magnitude,
+        expected_grad_r(miller_theta),
         atol=atol,
     )
 
@@ -177,8 +204,10 @@ def test_load_from_eq():
     norms = SimulationNormalisation("test_load_from_eq_fouriergene")
     eq = read_equilibrium(template_dir / "test.geqdsk", "GEQDSK")
 
-    fourier = LocalGeometryFourierGENE()
-    fourier.from_global_eq(eq, 0.5, norms)
+    fourier = LocalGeometryFourierGENE.from_global_eq(eq, 0.5)
+    norms.set_bref(fourier)
+    norms.set_lref(fourier)
+    fourier = fourier.normalise(norms)
 
     assert fourier["local_geometry"] == "FourierGENE"
 
@@ -277,7 +306,6 @@ def test_load_from_eq():
             atol=atol,
         )
 
-    fourier.R, fourier.Z = fourier.get_flux_surface(fourier.theta_eq)
     assert np.isclose(
         min(fourier.R).to("meter"),
         1.7476563059555796 * units.meter,
@@ -367,15 +395,23 @@ def test_b_poloidal(generate_miller, parameters, expected):
     """Analytic answers for this test generated using sympy"""
     length = 129
     theta = np.linspace(0, 2 * np.pi, length)
-
     miller = generate_miller(theta, dict=parameters)
+    fourier = LocalGeometryFourierGENE.from_local_geometry(miller)
 
-    fourier = LocalGeometryFourierGENE()
-    fourier.from_local_geometry(miller)
+    miller_theta = get_miller_theta(
+        fourier.R.m,
+        fourier.Z.m,
+        theta,
+        fourier.Rmaj.m,
+        fourier.Z0.m,
+        fourier.rho.m,
+        miller.kappa.m,
+        miller.delta.m,
+    )
 
     np.testing.assert_allclose(
-        ureg.Quantity(fourier.get_b_poloidal(fourier.theta_eq)).magnitude,
-        expected(theta),
+        ureg.Quantity(fourier.b_poloidal).magnitude,
+        expected(miller_theta),
         atol=atol,
     )
 
@@ -384,10 +420,16 @@ def test_tracer_efit_eqdsk():
     norms = SimulationNormalisation("test_tracer_efit_eqdsk", convention="gene")
     eq = read_equilibrium(template_dir / "transp_eq.geqdsk", "GEQDSK")
 
-    fourier = LocalGeometryFourierGENE()
-    fourier.from_global_eq(eq, 0.7145650753687218, norms)
+    fourier = LocalGeometryFourierGENE.from_global_eq(
+        eq,
+        0.7145650753687218,
+        lref=str(norms.default_convention.lref),
+    )
 
     assert fourier["local_geometry"] == "FourierGENE"
+    norms.set_bref(fourier)
+    norms.set_lref(fourier)
+    fourier = fourier.normalise(norms)
 
     units = norms.units
 
@@ -555,3 +597,90 @@ def test_tracer_efit_eqdsk():
             rtol=rtol,
             atol=atol,
         )
+
+
+def simplify_grad_r(rho, Rmaj, shift, kappa, s_kappa, delta, s_delta):
+    """Utility used to generate parameters in ``test_grad_r``"""
+    from sympy import Symbol, simplify, cos, sin, asin, sqrt
+
+    theta = Symbol("theta")
+
+    R = Rmaj + rho * (cos(theta + asin(delta) * sin(theta)))
+    Z = rho * kappa * sin(theta)
+
+    dRdr = (
+        shift
+        + cos(theta + asin(delta) * sin(theta))
+        - sin(theta + asin(delta) * sin(theta)) * sin(theta) * s_delta
+    )
+
+    dRdtheta = (
+        -rho * sin(theta + asin(delta) * sin(theta)) * (1 + asin(delta) * cos(theta))
+    )
+
+    dZdr = kappa * sin(theta) + s_kappa * kappa * sin(theta)
+    dZdtheta = kappa * rho * cos(theta)
+    g_tt = dRdtheta**2 + dZdtheta**2
+
+    grad_r = sqrt(g_tt) / (dRdr * dZdtheta - dRdtheta * dZdr)
+
+    return simplify(R), simplify(Z), simplify(grad_r)
+
+
+def print_grad_r_params():
+    # Simple circular plasma
+    rho = 0.5
+
+    Rmaj = 3.0
+    shift = 0.0
+
+    kappa = 1.0
+    s_kappa = 0.0
+
+    delta = 0.0
+    s_delta = 0.0
+
+    my_R, my_Z, my_grad_r = simplify_grad_r(
+        rho, Rmaj, shift, kappa, s_kappa, delta, s_delta
+    )
+    print(f"R for circular plasma: {my_R}")
+    print(f"Z for circular plasma: {my_Z}")
+    print(f"Grad_r for circular plasma: {my_grad_r}")
+
+    # Elongation gradient
+    rho = 0.5
+
+    Rmaj = 3.0
+    shift = 0.0
+
+    kappa = 1.0
+    s_kappa = 1.0
+
+    delta = 0.0
+    s_delta = 0.0
+
+    my_R, my_Z, my_grad_r = simplify_grad_r(
+        rho, Rmaj, shift, kappa, s_kappa, delta, s_delta
+    )
+    print(f"R for circular plasma with s_kappa: {my_R}")
+    print(f"Z for circular plasma with s_kappa: {my_Z}")
+    print(f"Grad_r for circular plasma with s_kappa: {my_grad_r}")
+
+    # High shaping
+    rho = 0.5
+
+    Rmaj = 3.0
+    shift = 0.1
+
+    kappa = 2.0
+    s_kappa = 1.0
+
+    delta = 0.5
+    s_delta = 0.2
+
+    my_R, my_Z, my_grad_r = simplify_grad_r(
+        rho, Rmaj, shift, kappa, s_kappa, delta, s_delta
+    )
+    print(f"R for shaped plasma: {my_R}")
+    print(f"Z for shaped plasma: {my_Z}")
+    print(f"Grad_r for shaped plasma: {my_grad_r}")
