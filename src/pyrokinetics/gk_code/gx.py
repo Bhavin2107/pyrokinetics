@@ -193,6 +193,10 @@ class GKInputGX(GKInput, FileReader, file_type="GX", reads=GKInput):
         local_norm: Normalisation = None,
         code_normalisation: str = None,
     ):
+        # Create directories if they don't exist already
+        filename = Path(filename)
+        filename.parent.mkdir(parents=True, exist_ok=True)
+
         def drop_array(namelist):
             for key, val in namelist.items():
                 if isinstance(val, np.ndarray):
@@ -909,7 +913,7 @@ class GKOutputReaderGX(FileReader, file_type="GX", reads=GKOutput):
             linear=coords["linear"],
             gk_code="GX",
             input_file=input_str,
-            normalise_flux_moment=False,
+            normalise_flux_moment=True,
             output_convention=output_convention,
         )
 
@@ -1353,14 +1357,22 @@ class GKOutputReaderGX(FileReader, file_type="GX", reads=GKOutput):
             trapezoid(square_fields, coords["theta"], axis=0) / (2 * np.pi)
         )
 
+        field_amplitude = np.where(field_amplitude == 0, 1.0, field_amplitude)
+
         # FIXME I have simply copied the code from the GS2 file, as the structure
         # should be the same. However, this just gives nan's for the cases that I have
         # tried, so unsure whether this is correct?
-
         first_field = eigenfunctions[0, ...]
         theta_star = np.argmax(abs(first_field), axis=0)
         field_theta_star = first_field[theta_star, 0, 0]
-        phase = np.abs(field_theta_star) / field_theta_star
+
+        idx = np.ogrid[[slice(dim) for dim in first_field.shape]]
+        idx[0] = theta_star
+        field_theta_star = first_field[tuple(idx)][0, ...]
+
+        phase = np.exp(-1j * np.angle(field_theta_star))
+
+        phase = np.nan_to_num(phase, nan=0.0)
 
         result = eigenfunctions * phase / field_amplitude
 
